@@ -1,0 +1,20 @@
+[package]
+name = "claw-agent-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false  # change to true when ready to publish
+
+[dependencies]
+sdk-types = { path = "../sdk-types" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true }
+futures = "0.3"
+async-trait = "0.1"
+dirs = "6"
+which = "7"
+tokio-stream = "0.1"
+
+[lints]
+workspace = true

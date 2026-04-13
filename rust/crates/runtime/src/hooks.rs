@@ -839,6 +839,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn allows_exit_code_zero_and_captures_stdout() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet("printf 'pre ok'")],
@@ -852,6 +853,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn denies_exit_code_two() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet("printf 'blocked by hook'; exit 2")],
@@ -866,6 +868,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn propagates_other_non_zero_statuses_as_failures() {
         let runner = HookRunner::from_feature_config(&RuntimeFeatureConfig::default().with_hooks(
             RuntimeHookConfig::new(
@@ -888,6 +891,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn parses_pre_hook_permission_override_and_updated_input() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet(
@@ -909,6 +913,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn runs_post_tool_use_failure_hooks() {
         // given
         let runner = HookRunner::new(RuntimeHookConfig::new(
@@ -927,6 +932,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn stops_running_failure_hooks_after_failure() {
         // given
         let runner = HookRunner::new(RuntimeHookConfig::new(
@@ -955,6 +961,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn executes_hooks_in_configured_order() {
         // given
         let runner = HookRunner::new(RuntimeHookConfig::new(
@@ -1016,6 +1023,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn stops_running_hooks_after_failure() {
         // given
         let runner = HookRunner::new(RuntimeHookConfig::new(
@@ -1040,6 +1048,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn malformed_nonempty_hook_output_reports_explicit_diagnostic_with_previews() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet(
@@ -1065,6 +1074,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn abort_signal_cancels_long_running_hook_and_reports_progress() {
         let runner = HookRunner::new(RuntimeHookConfig::new(
             vec![shell_snippet("sleep 5")],

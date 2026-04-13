@@ -9,6 +9,8 @@
 mod init;
 mod input;
 mod render;
+mod sdk_input;
+mod sdk_output;
 
 use std::collections::BTreeSet;
 use std::env;
@@ -98,6 +100,7 @@ const CLI_OPTION_SUGGESTIONS: &[&str] = &[
     "--print",
     "--compact",
     "--base-commit",
+    "--sdk",
     "-p",
 ];
 
@@ -270,6 +273,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             reasoning_effort,
             allow_broad_cwd,
         )?,
+        CliAction::Sdk {
+            model,
+            allowed_tools,
+            permission_mode,
+        } => run_sdk(model, allowed_tools, permission_mode)?,
         CliAction::HelpTopic(topic) => print_help_topic(topic),
         CliAction::Help { output_format } => print_help(output_format)?,
     }
@@ -356,6 +364,11 @@ enum CliAction {
         reasoning_effort: Option<String>,
         allow_broad_cwd: bool,
     },
+    Sdk {
+        model: String,
+        allowed_tools: Option<AllowedToolSet>,
+        permission_mode: PermissionMode,
+    },
     HelpTopic(LocalHelpTopic),
     // prompt-mode formatting is only supported for non-interactive runs
     Help {
@@ -400,6 +413,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     let mut base_commit: Option<String> = None;
     let mut reasoning_effort: Option<String> = None;
     let mut allow_broad_cwd = false;
+    let mut sdk = false;
     let mut rest: Vec<String> = Vec::new();
     let mut index = 0;
 
@@ -514,6 +528,10 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 allow_broad_cwd = true;
                 index += 1;
             }
+            "--sdk" => {
+                sdk = true;
+                index += 1;
+            }
             "-p" => {
                 // Claw Code compat: -p "prompt" = one-shot prompt
                 let prompt = args[index + 1..].join(" ");
@@ -584,6 +602,13 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
 
     if rest.is_empty() {
         let permission_mode = permission_mode_override.unwrap_or_else(default_permission_mode);
+        if sdk {
+            return Ok(CliAction::Sdk {
+                model,
+                allowed_tools,
+                permission_mode,
+            });
+        }
         // When stdin is not a terminal (pipe/redirect) and no prompt is given on the
         // command line, read stdin as the prompt and dispatch as a one-shot Prompt
         // rather than starting the interactive REPL (which would consume the pipe and
@@ -3110,6 +3135,211 @@ fn run_repl(
     }
 
     Ok(())
+}
+
+/// Run the CLI in SDK mode: read JSON-lines from stdin, write JSON-lines to stdout.
+///
+/// All terminal UI features (spinner, colors, banner) are suppressed. Tool
+/// execution, permissions, and hooks continue to work normally.
+fn run_sdk(
+    model: String,
+    allowed_tools: Option<AllowedToolSet>,
+    permission_mode: PermissionMode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resolved_model = resolve_repl_model(model.clone());
+
+    // Build a single LiveCli instance that persists across turns.
+    let mut cli = LiveCli::new(resolved_model.clone(), true, allowed_tools, permission_mode)?;
+
+    let session_id = cli.session.id.clone();
+    let cwd = env::current_dir().map_or_else(|_| "<unknown>".to_string(), |p| p.display().to_string());
+
+    // Build the tool name list for the init message.
+    let tool_names: Vec<String> = mvp_tool_specs()
+        .iter()
+        .map(|spec| spec.name.to_string())
+        .collect();
+
+    // Set up the SDK output adapter writing compact JSON-lines to stdout.
+    let stdout = io::stdout();
+    let mut sdk_out = sdk_output::SdkOutputAdapter::new(stdout, session_id.clone(), resolved_model.clone());
+
+    sdk_out.emit_init(&tool_names, &cwd)?;
+    sdk_out.flush()?;
+
+    // Set up the SDK input reader reading JSON-lines from stdin.
+    let stdin = io::stdin();
+    let stdin_lock = stdin.lock();
+    let mut sdk_in = sdk_input::SdkInputReader::new(io::BufReader::new(stdin_lock));
+
+    while let Some(input) = sdk_in.read_next()? {
+        let prompt_text = match input {
+            sdk_input::SdkInput::EndOfInput => continue,
+            sdk_input::SdkInput::Command { command, params } => {
+                match command.as_str() {
+                    "interrupt" => {
+                        eprintln!("[sdk] interrupt received, stopping session");
+                        break;
+                    }
+                    "set_permission_mode" => {
+                        if let Some(mode_str) = params.get("mode").and_then(|v| v.as_str()) {
+                            if let Ok(mode) = parse_permission_mode_arg(mode_str) {
+                                cli.permission_mode = mode;
+                            }
+                        }
+                    }
+                    "set_model" => {
+                        if let Some(model_str) = params.get("model").and_then(|v| v.as_str()) {
+                            cli.model = resolve_model_alias_with_config(model_str);
+                        }
+                    }
+                    _ => {
+                        eprintln!("[sdk] unknown command: {command}");
+                    }
+                }
+                continue;
+            }
+            sdk_input::SdkInput::Resume { session_id: _sid } => {
+                // Resume is not yet supported in SDK mode; just treat it as a no-op.
+                continue;
+            }
+            sdk_input::SdkInput::UserMessage { content } => content,
+            sdk_input::SdkInput::UserMessageBlocks { content } => content
+                .iter()
+                .filter_map(|block| block.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join(""),
+        };
+
+        if prompt_text.trim().is_empty() {
+            continue;
+        }
+
+        let turn_start = Instant::now();
+
+        let (mut runtime, hook_abort_monitor) = cli.prepare_turn_runtime(false)?;
+        let mut permission_prompter = CliPermissionPrompter::new(cli.permission_mode);
+        let result = runtime.run_turn(&prompt_text, Some(&mut permission_prompter));
+        hook_abort_monitor.stop();
+
+        let duration_ms = turn_start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(summary) => {
+                cli.replace_runtime(runtime)?;
+                cli.persist_session()?;
+
+                // Emit assistant messages as JSON-lines.
+                for message in &summary.assistant_messages {
+                    let content_blocks: Vec<Value> = message
+                        .blocks
+                        .iter()
+                        .map(|block| match block {
+                            ContentBlock::Text { text } => json!({
+                                "type": "text",
+                                "text": text,
+                            }),
+                            ContentBlock::ToolUse { id, name, input } => json!({
+                                "type": "tool_use",
+                                "id": id,
+                                "name": name,
+                                "input": serde_json::from_str::<Value>(input)
+                                    .unwrap_or(Value::Null),
+                            }),
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                tool_name,
+                                output,
+                                is_error,
+                            } => json!({
+                                "type": "tool_result",
+                                "tool_use_id": tool_use_id,
+                                "tool_name": tool_name,
+                                "output": output,
+                                "is_error": is_error,
+                            }),
+                        })
+                        .collect();
+
+                    let uuid = format!("{:x}", uuid_timestamp_ms());
+                    let message_id = format!("msg_{}", &uuid[..8]);
+                    sdk_out.emit_assistant_message(content_blocks, &uuid, &message_id)?;
+                }
+
+                // Emit tool results as separate messages.
+                for message in &summary.tool_results {
+                    for block in &message.blocks {
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            output,
+                            is_error,
+                            ..
+                        } = block
+                        {
+                            sdk_out.emit_tool_result(tool_use_id, output, *is_error)?;
+                        }
+                    }
+                }
+
+                let final_text = final_assistant_text(&summary);
+                let cost_usd = summary
+                    .usage
+                    .estimate_cost_usd_with_pricing(
+                        pricing_for_model(&cli.model)
+                            .unwrap_or_else(ModelPricing::default_sonnet_tier),
+                    )
+                    .total_cost_usd();
+
+                sdk_out.emit_result(
+                    "success",
+                    duration_ms,
+                    duration_ms,
+                    false,
+                    summary.iterations as u32,
+                    Some(cost_usd),
+                    Some(json!({
+                        "input_tokens": summary.usage.input_tokens,
+                        "output_tokens": summary.usage.output_tokens,
+                        "cache_creation_input_tokens": summary.usage.cache_creation_input_tokens,
+                        "cache_read_input_tokens": summary.usage.cache_read_input_tokens,
+                    })),
+                    if final_text.is_empty() {
+                        None
+                    } else {
+                        Some(final_text)
+                    },
+                    Some("end_turn".to_string()),
+                )?;
+                sdk_out.flush()?;
+            }
+            Err(error) => {
+                let _ = runtime.shutdown_plugins();
+                let error_message = error.to_string();
+                sdk_out.emit_result(
+                    "error",
+                    duration_ms,
+                    duration_ms,
+                    true,
+                    0,
+                    None,
+                    None,
+                    Some(error_message),
+                    None,
+                )?;
+                sdk_out.flush()?;
+                return Err(Box::new(error));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn uuid_timestamp_ms() -> u128 {
+    UNIX_EPOCH
+        .elapsed()
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone)]
@@ -11272,6 +11502,7 @@ UU conflicted.rs",
     }
 
     #[test]
+    #[cfg(unix)]
     #[allow(clippy::too_many_lines)]
     fn build_runtime_plugin_state_discovers_mcp_tools_and_surfaces_pending_servers() {
         let config_home = temp_dir();
@@ -11442,6 +11673,7 @@ UU conflicted.rs",
     }
 
     #[test]
+    #[cfg(unix)]
     fn build_runtime_runs_plugin_lifecycle_init_and_shutdown() {
         // Serialize access to process-wide env vars so parallel tests that
         // set/remove ANTHROPIC_API_KEY do not race with this test.

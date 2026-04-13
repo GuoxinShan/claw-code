@@ -1410,6 +1410,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::io::ErrorKind;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1443,6 +1444,17 @@ mod tests {
         std::env::temp_dir().join(format!("runtime-mcp-stdio-{nanos}-{unique_id}"))
     }
 
+    fn set_executable(path: &Path) {
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(path).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("chmod");
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+    }
+
     fn write_echo_script() -> PathBuf {
         let root = temp_dir();
         fs::create_dir_all(&root).expect("temp dir");
@@ -1452,9 +1464,7 @@ mod tests {
             "#!/bin/sh\nprintf 'READY:%s\\n' \"$MCP_TEST_TOKEN\"\nIFS= read -r line\nprintf 'ECHO:%s\\n' \"$line\"\n",
         )
         .expect("write script");
-        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod");
+        set_executable(&script_path);
         script_path
     }
 
@@ -1498,9 +1508,7 @@ mod tests {
         ]
         .join("\n");
         fs::write(&script_path, script).expect("write script");
-        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod");
+        set_executable(&script_path);
         script_path
     }
 
@@ -1632,9 +1640,7 @@ mod tests {
         ]
         .join("\n");
         fs::write(&script_path, script).expect("write script");
-        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod");
+        set_executable(&script_path);
         script_path
     }
 
@@ -1757,9 +1763,7 @@ mod tests {
         ]
         .join("\n");
         fs::write(&script_path, script).expect("write script");
-        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod");
+        set_executable(&script_path);
         script_path
     }
 
@@ -1843,6 +1847,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn spawns_stdio_process_and_round_trips_io() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -1885,6 +1890,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn round_trips_initialize_request_and_response_over_stdio_frames() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -1932,6 +1938,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn write_jsonrpc_request_emits_content_length_frame() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -1966,6 +1973,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn given_lowercase_content_length_when_initialize_then_response_parses() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2006,6 +2014,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn given_mismatched_response_id_when_initialize_then_invalid_data_is_returned() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2045,6 +2054,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn direct_spawn_uses_transport_env() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2069,6 +2079,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn lists_tools_calls_tool_and_reads_resources_over_jsonrpc() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2169,6 +2180,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn surfaces_jsonrpc_errors_from_tool_calls() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2206,6 +2218,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn manager_discovers_tools_from_stdio_config() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2236,6 +2249,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn manager_routes_tool_calls_to_correct_server() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2298,6 +2312,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn manager_times_out_slow_tool_calls() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2353,6 +2368,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn manager_surfaces_parse_errors_from_tool_calls() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2407,6 +2423,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn given_child_exits_after_discovery_when_calling_twice_then_second_call_succeeds_after_reset()
     {
         let runtime = Builder::new_current_thread()
@@ -2478,6 +2495,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn given_initialize_hangs_once_when_discover_tools_then_manager_retries_and_succeeds() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2527,6 +2545,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn given_tool_call_disconnects_once_when_calling_twice_then_manager_resets_and_next_call_succeeds(
     ) {
         let runtime = Builder::new_current_thread()
@@ -2615,6 +2634,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn manager_lists_and_reads_resources_from_stdio_servers() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2676,13 +2696,12 @@ mod tests {
         ]
         .join("\n");
         fs::write(&script_path, script).expect("write script");
-        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod");
+        set_executable(&script_path);
         script_path
     }
 
     #[test]
+    #[cfg(unix)]
     fn manager_discovery_report_keeps_healthy_servers_when_one_server_fails() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2822,6 +2841,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn manager_shutdown_terminates_spawned_children_and_is_idempotent() {
         let runtime = Builder::new_current_thread()
             .enable_all()
@@ -2846,6 +2866,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn manager_reuses_spawned_server_between_discovery_and_call() {
         let runtime = Builder::new_current_thread()
             .enable_all()

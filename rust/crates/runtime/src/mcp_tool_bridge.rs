@@ -314,6 +314,7 @@ impl McpToolRegistry {
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -338,6 +339,17 @@ mod tests {
         if let Some(root) = script_path.parent() {
             let _ = fs::remove_dir_all(root);
         }
+    }
+
+    fn set_executable(path: &Path) {
+        #[cfg(unix)]
+        {
+            let mut permissions = fs::metadata(path).expect("metadata").permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).expect("chmod");
+        }
+        #[cfg(not(unix))]
+        let _ = path;
     }
 
     fn write_bridge_mcp_server_script() -> PathBuf {
@@ -430,9 +442,7 @@ mod tests {
         ]
         .join("\n");
         fs::write(&script_path, script).expect("write script");
-        let mut permissions = fs::metadata(&script_path).expect("metadata").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&script_path, permissions).expect("chmod");
+        set_executable(&script_path);
         script_path
     }
 
@@ -569,6 +579,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn given_connected_server_with_manager_when_calling_tool_then_it_returns_live_result() {
         let script_path = write_bridge_mcp_server_script();
         let root = script_path.parent().expect("script parent");
@@ -812,6 +823,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn call_tool_payload_structure() {
         let script_path = write_bridge_mcp_server_script();
         let root = script_path.parent().expect("script parent");
